@@ -1,26 +1,444 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* ------------------------------------------------------------------
+   PLUS CARD — design tokens
 
+   Every colour is a CSS variable, so Dark and Light are the same
+   layout with a different palette: switching themes never changes a
+   single dimension. `@theme inline` makes Tailwind emit var()
+   references instead of baking the values in at build time.
+------------------------------------------------------------------- */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-ink: var(--pc-ink); /* page background */
+  --color-ink-2: var(--pc-ink-2); /* raised background (bottom nav) */
+  --color-surface: var(--pc-surface); /* cards */
+  --color-surface-2: var(--pc-surface-2); /* card hover / inputs */
+  --color-line: var(--pc-line); /* hairline borders */
+  --color-fg: var(--pc-fg); /* primary text */
+  --color-fg-strong: var(--pc-fg-strong); /* pure white / pure ink */
+  --color-muted: var(--pc-muted); /* secondary text */
+  --color-muted-2: var(--pc-muted-2); /* tertiary text */
+  --color-brand: var(--pc-brand); /* primary accent */
+  --color-brand-600: var(--pc-brand-600);
+  --color-brand-soft: var(--pc-brand-soft);
+  --color-success: var(--pc-success);
+  --color-danger: var(--pc-danger);
+  --color-warn: var(--pc-warn); /* caution — e.g. supplier availability unknown */
+  /* Neutral "add" button over product artwork — grey on dark, white on light */
+  --color-plus: var(--pc-plus);
+  --color-plus-fg: var(--pc-plus-fg);
+
+  --radius-card: 1rem;
+  --radius-xl2: 1.25rem;
+  --radius-xl3: 1.5rem;
+
+  --shadow-card: var(--pc-shadow-card);
+  --shadow-pop: var(--pc-shadow-pop);
+
+  --font-sans: var(--font-arabic), "Segoe UI", system-ui, -apple-system, sans-serif;
+  /* The face the admin picked; each option below re-points this one variable. */
+  --font-arabic: var(--font-plex);
+
+  --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* Dark is the default palette. The ground is deliberately deeper than the
+   usual dark-UI grey: this is a wall of product artwork — game keys, telecom
+   logos in magenta and green — and every step darker under it is a step of
+   contrast the artwork gets for free.
+
+   The whole ramp is built in OKLCH at one hue (262°, a cool blue) with a
+   little chroma carried into the neutrals, so the greys belong to the accent
+   instead of sitting next to it. Values are written as hex because that is
+   what the rest of the file speaks; the OKLCH figures are in DESIGN.md.
+
+   Only the values below change between themes; no dimension does. */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --pc-ink: #0c1118;
+  --pc-ink-2: #131821;
+  --pc-surface: #1a202b;
+  --pc-surface-2: #242b37;
+  --pc-line: #313948;
+  --pc-fg: #f5f7f9;
+  --pc-fg-strong: #ffffff;
+  /* The halo only belongs on the dark page — see the text-glow utility. */
+  --pc-text-glow:
+    0 0 30px color-mix(in oklab, var(--pc-brand) 42%, transparent),
+    0 0 62px color-mix(in oklab, var(--pc-brand) 22%, transparent);
+  --pc-muted: #a9b0bb;
+  --pc-muted-2: #7c8491;
+  /* 5.3:1 on the ground as a text colour, and still dark enough to carry white
+     at bold weight on a filled button. Those two pull in opposite directions;
+     this is the point where both hold. */
+  --pc-brand: #0789f2;
+  --pc-brand-600: #0073d5;
+  --pc-brand-soft: #0789f226;
+  --pc-success: #35c26d;
+  --pc-danger: #ef4c4b;
+  --pc-warn: #eba71f;
+  --pc-plus: #272e3a;
+  --pc-plus-fg: #ffffff;
+
+  /* Deeper ground, deeper shadow — the old one vanished against it. */
+  --pc-shadow-card: 0 10px 28px -14px rgb(0 0 0 / 0.75);
+  --pc-shadow-pop: 0 24px 55px -22px rgb(0 0 0 / 0.9);
+  --pc-skeleton-sheen: #ffffff14;
+
+  /* Flat-illustration surface (the plate under the empty basket). */
+  --pc-illus-plate: #edebfa;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --pc-ink: #f4f7fb;
+  --pc-ink-2: #ffffff;
+  --pc-surface: #ffffff;
+  --pc-surface-2: #ecf0f7;
+  --pc-line: #d9dee8;
+  --pc-fg: #212938;
+  --pc-fg-strong: #0b1220;
+  --pc-text-glow: none;
+  --pc-muted: #60697b;
+  /* Was #98a1b2 — 2.6:1 on this ground, which is not a text colour, it is a
+     suggestion of one. Timestamps and hints are still text. */
+  --pc-muted-2: #677182;
+  --pc-brand: #0067da;
+  --pc-brand-600: #0054bf;
+  --pc-brand-soft: #0067da14;
+  --pc-success: #007f3b;
+  --pc-danger: #c51d28;
+  --pc-warn: #916100;
+  --pc-plus: #ffffff;
+  --pc-plus-fg: #3f4756;
+
+  --pc-shadow-card: 0 8px 20px -14px rgb(23 32 51 / 0.22);
+  --pc-shadow-pop: 0 18px 40px -22px rgb(23 32 51 / 0.3);
+  --pc-skeleton-sheen: #1720330f;
+
+  --pc-illus-plate: #d7dcec;
+}
+
+/* The chosen typeface. Every face is already loaded on <html>; this only
+   decides which of them --font-arabic points at, so switching costs nothing
+   at runtime and never flashes the previous face. */
+:root[data-font="cairo"] {
+  --font-arabic: var(--font-cairo);
+}
+
+:root[data-font="tajawal"] {
+  --font-arabic: var(--font-tajawal);
+}
+
+:root[data-font="almarai"] {
+  --font-arabic: var(--font-almarai);
+}
+
+:root[data-font="kufi"] {
+  --font-arabic: var(--font-kufi);
+}
+
+:root[data-font="alexandria"] {
+  --font-arabic: var(--font-alexandria);
+}
+
+:root[data-font="readex"] {
+  --font-arabic: var(--font-readex);
+}
+
+:root[data-font="changa"] {
+  --font-arabic: var(--font-changa);
+}
+
+:root[data-font="messiri"] {
+  --font-arabic: var(--font-messiri);
+}
+
+:root[data-font="baloo"] {
+  --font-arabic: var(--font-baloo);
+}
+
+:root[data-font="noto"] {
+  --font-arabic: var(--font-noto);
+}
+
+@layer base {
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    background-color: var(--pc-ink);
+  }
+
+  body {
+    background-color: var(--pc-ink);
+    color: var(--pc-fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior-y: none;
+    /* Theme changes fade instead of snapping. */
+    transition: background-color 0.25s var(--ease-smooth), color 0.25s var(--ease-smooth);
+  }
+
+  /* Numbers stay latin & LTR even inside RTL text (prices, balances) */
+  .num {
+    direction: ltr;
+    unicode-bidi: isolate;
+    font-feature-settings: "tnum";
+  }
+
+  /* Even digit widths without forcing a direction — for text that mixes
+     numbers into an Arabic sentence, such as a date, where the surrounding
+     RTL flow must decide the order. */
+  .tnum {
+    font-feature-settings: "tnum";
+  }
+
+  ::selection {
+    background: var(--pc-brand);
+    color: #fff;
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+  }
+
+  /* Slim scrollbars on desktop */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--pc-ink);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--pc-line);
+    border-radius: 999px;
+    border: 3px solid var(--pc-ink);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@utility no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Content sits above the fixed bottom navigation (+ iOS home indicator) */
+@utility pb-nav {
+  padding-bottom: calc(5.25rem + env(safe-area-inset-bottom));
+}
+
+/* Same, with room for the floating cart bar */
+@utility pb-cart {
+  padding-bottom: calc(9.5rem + env(safe-area-inset-bottom));
+}
+
+/* A faint halo behind a heading, on the dark page only.
+
+   Glow is light, and light only reads as light against something dark. On the
+   pale theme the same halo sits over dark letters and greys them out — it makes
+   the heading look faded rather than lit — so there the token is `none` and the
+   text is simply the darkest ink on the page.
+
+   Both radii are wide on purpose: a tight shadow settles on the glyph edges and
+   dulls them, which is the opposite of what a glow is for. Spread this far, the
+   light sits around the word and the letters stay crisp. */
+@utility text-glow {
+  text-shadow: var(--pc-text-glow);
+}
+
+/* ------------------------------------------------------------------
+   The message composer and the on-screen keyboard.
+
+   iOS does not shrink the layout viewport when the keyboard opens, so a
+   bottom-anchored bar ends up underneath it. --pc-keyboard is written by
+   the chat screen from the visual viewport and says how much of the
+   screen the keyboard covers; the composer rides on top of it.
+
+   While the keyboard is up the bottom navigation is hidden: it would be
+   stranded behind the keyboard anyway, and its tabs are not something
+   anybody reaches for mid-message.
+------------------------------------------------------------------ */
+.pc-composer {
+  bottom: env(safe-area-inset-bottom);
+}
+
+:root[data-keyboard] .pc-composer {
+  bottom: var(--pc-keyboard, 0px);
+}
+
+:root[data-keyboard] .pc-bottom-nav {
+  display: none;
+}
+
+/* ------------------------------------------------------------------
+   Grid reveal.
+
+   A storefront opens on a wall of artwork, and having it all land at
+   once is the one moment where motion tells the customer something:
+   the shop is stocked, and it arrived in an order. The stagger runs
+   along the reading direction because --i is the index in the list,
+   which in an RTL grid means right to left.
+
+   The delay is capped: past the first dozen tiles the customer is
+   already scrolling, and a grid of sixty would otherwise still be
+   arriving a second and a half later. Anything below the fold is off
+   screen while it plays, which is the point — nothing waits on an
+   observer that a headless render or a background tab never fires.
+------------------------------------------------------------------ */
+@keyframes tile-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(0.965);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@utility tile-in {
+  animation: tile-in 460ms var(--ease-smooth) backwards;
+  animation-delay: calc(min(var(--i, 0), 11) * 30ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tile-in {
+    animation: none;
+  }
+}
+
+@utility tap {
+  transition: transform 0.18s var(--ease-smooth), opacity 0.18s var(--ease-smooth),
+    background-color 0.18s var(--ease-smooth), border-color 0.18s var(--ease-smooth);
+  &:active {
+    transform: scale(0.97);
+  }
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(-100%);
+  }
+}
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--pc-surface);
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(100%);
+  background: linear-gradient(90deg, transparent, var(--pc-skeleton-sheen), transparent);
+  animation: shimmer 1.4s infinite;
+}
+
+/* ------------------------------------------------------------------
+   Page transition — the whole page slides as one block, never element
+   by element.
+
+   Forward (opening a category, a product or an order) travels LEFT → RIGHT.
+   Going back plays the exact opposite, RIGHT → LEFT, for the same
+   duration. The direction is physical and is deliberately NOT mirrored
+   for RTL.
+
+   fill-mode is `backwards`, not `both`, on purpose: `forwards` would
+   leave a transform on the wrapper forever, and any transform turns the
+   element into the containing block of its position:fixed descendants.
+------------------------------------------------------------------ */
+:root {
+  --pc-page-transition: 500ms;
+  --pc-page-ease: ease-in-out;
+}
+
+@keyframes page-enter-ltr {
+  from {
+    opacity: 0;
+    transform: translate3d(-100%, 0, 0);
+  }
+  35% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes page-enter-rtl {
+  from {
+    opacity: 0;
+    transform: translate3d(100%, 0, 0);
+  }
+  35% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.page-enter-ltr {
+  animation: page-enter-ltr var(--pc-page-transition) var(--pc-page-ease) backwards;
+}
+
+.page-enter-rtl {
+  animation: page-enter-rtl var(--pc-page-transition) var(--pc-page-ease) backwards;
+}
+
+/* Pressing the back arrow: the page on screen leaves before history moves.
+   Declared after the entrance rules on purpose — same specificity, same
+   `animation-name` property, so the later declaration wins if the two
+   classes ever meet. `forwards` holds the page off-screen for the few frames
+   between the end of the slide and the next route rendering. */
+@keyframes page-exit {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  65% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(-100%, 0, 0);
+  }
+}
+
+.page-exit {
+  animation: page-exit var(--pc-page-transition) var(--pc-page-ease) forwards;
+}
+
+/* The sliding page must never widen the document. */
+.page-transition-host {
+  overflow-x: clip;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter-ltr,
+  .page-enter-rtl,
+  .page-exit {
+    animation: none;
+  }
+  html {
+    scroll-behavior: auto;
+  }
+  body {
+    transition: none;
+  }
 }

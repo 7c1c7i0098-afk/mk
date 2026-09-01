@@ -1,0 +1,1017 @@
+// PLUS CARD — Gift Card Marketplace
+// All monetary values are stored as INTEGER minor units (1.00 د.ل = 100).
+// Provider is sqlite for local development; switch to postgresql for production.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum OrderStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+enum TransactionType {
+  DEPOSIT
+  PURCHASE
+  REFUND
+  ADJUSTMENT
+  /// Wallet-to-wallet between two customers. One movement per side, and the
+  /// sign tells them apart: positive on the receiver, negative on the sender.
+  TRANSFER
+}
+
+enum VerificationPurpose {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
+model User {
+  id    String  @id @default(cuid())
+  /// Short, stable account number the customer can quote and an admin can look
+  /// up. Public on purpose — it identifies, it never authorises: every admin
+  /// action still re-checks the session role server-side.
+  publicId String? @unique
+  name  String
+  email String  @unique
+  phone String?
+  /// Null for accounts created through Google / Apple only
+  passwordHash    String?
+  emailVerifiedAt DateTime?
+  /// Avatar supplied by an identity provider
+  image           String?
+  role            Role       @default(USER)
+  status          UserStatus @default(ACTIVE)
+  /// Wallet balance in minor units (0.01 د.ل)
+  balance         Int        @default(0)
+  /// Blanket discount for this customer, in basis points (1000 = 10.00%).
+  /// Per-product overrides live in UserDiscount.
+  discountBps     Int        @default(0)
+  /// Bumped on password reset — invalidates every previously issued session
+  sessionVersion  Int        @default(0)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  accounts          AuthAccount[]
+  favorites         Favorite[]
+  cart              Cart?
+  orders            Order[]
+  transactions      Transaction[] @relation("UserTransactions")
+  adminTransactions Transaction[] @relation("AdminTransactions")
+  discounts         UserDiscount[]
+  auditEntries      AdminActionLog[] @relation("AuditTarget")
+  auditPerformed    AdminActionLog[] @relation("AuditActor")
+  topUps            TopUpRequest[]   @relation("TopUpCustomer")
+  topUpsReviewed    TopUpRequest[]   @relation("TopUpReviewer")
+  supportMessages   SupportMessage[] @relation("SupportCustomer")
+  supportReplies    SupportMessage[] @relation("SupportStaff")
+  supportThread     SupportThread?   @relation("SupportThreadCustomer")
+  supportClosed     SupportThread[]  @relation("SupportThreadCloser")
+
+  @@index([role])
+  @@index([publicId])
+  @@map("users")
+}
+
+/// A federated identity (Google / Apple) linked to a PLUS CARD account.
+model AuthAccount {
+  id String @id @default(cuid())
+  userId String
+  /// "google" | "apple"
+  provider String
+  /// Stable provider subject id — never the display name
+  providerAccountId String
+  /// Email as reported by the provider (may be an Apple private relay address)
+  email     String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("auth_accounts")
+}
+
+/// Single-use 6-digit codes for email verification and password reset.
+model VerificationCode {
+  id         String              @id @default(cuid())
+  email      String
+  purpose    VerificationPurpose
+  /// HMAC of the code — the plaintext code is never stored
+  codeHash   String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int                 @default(0)
+  createdAt  DateTime            @default(now())
+
+  @@index([email, purpose, createdAt])
+  @@map("verification_codes")
+}
+
+/// Fixed-window counters guarding login, OTP send and OTP verify endpoints.
+model RateLimit {
+  key       String   @id
+  count     Int      @default(0)
+  expiresAt DateTime
+
+  @@index([expiresAt])
+  @@map("rate_limits")
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  /// Admin-uploaded artwork, e.g. /uploads/categories/xxx.png
+  image     String?
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products Product[]
+
+  @@index([isActive, sortOrder])
+  @@map("categories")
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  categoryId  String
+  name        String
+  slug        String   @unique
+  /// Admin-uploaded artwork, e.g. /uploads/products/xxx.png
+  image       String?
+  description String?
+  /// How to use the purchased code — shown under "الوصف:" on the details screen
+  usageInstructions      String?
+  /// How to recharge / top up with the purchased code
+  rechargeInstructions   String?
+  /// How to redeem / activate the purchased code
+  redemptionInstructions String?
+  /// Optional external help or redemption page, e.g. the publisher's top-up site
+  helpLink               String?
+  /// Optional region label shown on the product page (USA, Turkey, ...)
+  region      String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  /// Product-level pricing rule for supplier-backed variants. Null means
+  /// "inherit" — the supplier rule, then the global default, decide instead.
+  markupType  MarkupType?
+  /// Basis points for PERCENT, minor units for FIXED.
+  markupValue Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category  Category         @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  variants  ProductVariant[]
+  favorites Favorite[]
+  discounts UserDiscount[]
+
+  @@index([categoryId, isActive, sortOrder])
+  @@index([isActive, sortOrder])
+  @@map("products")
+}
+
+model ProductVariant {
+  id        String  @id @default(cuid())
+  productId String
+  /// Display name, e.g. "بطاقة 10 دولار"
+  name      String
+  /// Face value label, e.g. "$10" or "5 د.ل"
+  value     String?
+  /// Selling price in minor units (0.01 د.ل)
+  price     Int
+  stock     Int     @default(0)
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  /// Per-denomination overrides. Null means "inherit the product's own text",
+  /// so shared instructions are stored once at product level.
+  description            String?
+  usageInstructions      String?
+  rechargeInstructions   String?
+  redemptionInstructions String?
+  helpLink               String?
+
+  /// MANUAL keeps whatever price the admin typed — sync never touches it.
+  /// AUTO recalculates `price` from the active supplier cost on every sync.
+  /// Manual products created before suppliers existed stay MANUAL by default.
+  priceMode   PriceMode   @default(MANUAL)
+  /// Variant-level pricing rule, the narrowest override. Null means "inherit".
+  markupType  MarkupType?
+  /// Basis points for PERCENT, minor units for FIXED.
+  markupValue Int?
+
+  product   Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  cartItems CartItem[]
+  orderItems OrderItem[]
+  supplierMappings ProductSupplierMapping[]
+
+  @@index([productId, isActive, sortOrder])
+  @@map("product_variants")
+}
+
+model Banner {
+  id        String   @id @default(cuid())
+  /// Admin-uploaded artwork, e.g. /uploads/banners/xxx.jpg
+  image     String?
+  title     String?
+  subtitle  String?
+  ctaText   String?
+  ctaLink   String?
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@map("banners")
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  productId String
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+  @@index([userId, createdAt])
+  @@map("favorites")
+}
+
+model Cart {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items CartItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id        String   @id @default(cuid())
+  cartId    String
+  variantId String
+  quantity  Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cart    Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@unique([cartId, variantId])
+  @@map("cart_items")
+}
+
+model Order {
+  id          String      @id @default(cuid())
+  /// Store-order number, its own sequence — see TopUpRequest.number.
+  number      Int         @unique
+  orderNumber String      @unique
+  userId      String
+  /// Amounts in minor units (0.01 د.ل)
+  subtotal    Int
+  discount    Int         @default(0)
+  total       Int
+  status      OrderStatus @default(PENDING)
+  note        String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id])
+  items        OrderItem[]
+  transactions Transaction[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  variantId String?
+  /// Snapshot fields — kept even if the product is later renamed or deleted
+  productName String
+  variantName String
+  productImage String?
+  unitPrice Int
+  quantity  Int
+  total     Int
+  /// Delivered gift-card code, filled by the admin when fulfilling
+  deliveredCode String?
+
+  /// Fulfilment snapshot, captured at order time for supplier-backed items.
+  /// Kept as plain columns rather than a relation so the record survives the
+  /// supplier or its catalog row being deleted later.
+  supplierId        String?
+  supplierName      String?
+  externalProductId String?
+  externalVariantId String?
+  /// Supplier cost at order time, in the supplier's own currency minor units.
+  supplierCost      Int?
+  supplierCurrency  String?
+  /// Serial and expiry that accompany a delivered code, when the supplier
+  /// sends them. The code itself stays in `deliveredCode` above. All three are
+  /// readable only through a query that has already checked the owning user.
+  deliveredSerial   String?
+  deliveredExpiry   String?
+
+  supplierOrder SupplierOrder?
+
+  order   Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model Transaction {
+  id          String          @id @default(cuid())
+  /// Customer-facing number for this movement.
+  ///
+  /// Two series, never mixed: credits count on the deposit sequence and
+  /// debits on the order sequence. A movement that already belongs to a
+  /// numbered thing — an order, a top-up request — reuses that number rather
+  /// than drawing a second one, so the wallet and the orders screen name the
+  /// same event identically.
+  number      Int
+  userId      String
+  type        TransactionType
+  /// Signed amount in minor units: positive credits, negative debits
+  amount      Int
+  /// Wallet balance after this transaction, in minor units
+  balanceAfter Int
+  description String?
+  orderId     String?
+  /// Admin who performed a manual adjustment, if any
+  adminId     String?
+  createdAt   DateTime        @default(now())
+
+  user  User   @relation("UserTransactions", fields: [userId], references: [id], onDelete: Cascade)
+  admin User?  @relation("AdminTransactions", fields: [adminId], references: [id], onDelete: SetNull)
+  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+  @@map("transactions")
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
+
+
+/// A per-product price override for one customer.
+///
+/// The customer's blanket rate is `User.discountBps`; a row here replaces that
+/// rate for one product. productId is deliberately NOT nullable: SQL treats
+/// NULLs as distinct in a unique index, so a nullable column here would let
+/// duplicate "all products" rows through the constraint unnoticed.
+model UserDiscount {
+  id         String   @id @default(cuid())
+  userId     String
+  productId  String
+  percentBps Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+  @@index([userId])
+  @@map("user_discounts")
+}
+
+enum AdminActionType {
+  BALANCE_CREDIT
+  BALANCE_DEBIT
+  DISCOUNT_SET
+  DISCOUNT_CLEAR
+  TOPUP_APPROVED
+  TOPUP_REJECTED
+}
+
+/// Permanent record of every balance movement and discount change an admin
+/// makes. Append-only: nothing in the app updates or deletes a row here.
+model AdminActionLog {
+  id           String          @id @default(cuid())
+  /// Null only if the acting admin account is later deleted.
+  adminId      String?
+  targetUserId String
+  type         AdminActionType
+  /// Signed amount in minor units for balance movements.
+  amount            Int?
+  balanceBefore     Int?
+  balanceAfter      Int?
+  discountBeforeBps Int?
+  discountAfterBps  Int?
+  /// Scope of a discount change; null means it applied to every product.
+  productId         String?
+  /// Product name snapshot, kept readable even if the product is removed.
+  productName       String?
+  note              String?
+  createdAt         DateTime @default(now())
+
+  admin  User? @relation("AuditActor", fields: [adminId], references: [id], onDelete: SetNull)
+  target User  @relation("AuditTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+
+  @@index([targetUserId, createdAt])
+  @@index([createdAt])
+  @@map("admin_action_logs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Multi-supplier catalog integration
+//
+//  A supplier is an external product API. Its catalog is mirrored into
+//  `supplier_products` — a staging area that is NEVER visible to customers.
+//  Only rows an admin explicitly maps through `product_supplier_mappings`
+//  reach the storefront, and they do so as ordinary Product/ProductVariant
+//  rows, so the shop, cart and favourites need no knowledge of suppliers.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum SupplierStatus {
+  ACTIVE
+  DISABLED
+}
+
+/// How credentials are attached to an outgoing supplier request.
+enum SupplierAuthType {
+  NONE
+  /// The adapter declares and attaches its own credentials (see
+  /// SupplierAdapter.credentialFields) — used by bespoke providers whose
+  /// scheme is not one of the generic ones below.
+  ADAPTER
+  /// Custom header, e.g. `X-API-Key: <token>`
+  API_KEY_HEADER
+  /// `Authorization: Bearer <token>`
+  BEARER_TOKEN
+  /// `Authorization: Basic base64(user:pass)`
+  BASIC_AUTH
+  /// Query string parameter, e.g. `?api_key=<token>`
+  QUERY_PARAM
+}
+
+/// Deliberately three-valued: a status the adapter does not recognise maps to
+/// UNKNOWN and is treated as "cannot sell", never as available.
+enum SupplierAvailability {
+  AVAILABLE
+  UNAVAILABLE
+  UNKNOWN
+}
+
+enum MarkupType {
+  /// Sell at cost.
+  NONE
+  /// `markupValue` is basis points: 1500 = +15%.
+  PERCENT
+  /// `markupValue` is minor units of the base currency.
+  FIXED
+}
+
+enum PriceMode {
+  /// The admin owns the price; sync never overwrites it.
+  MANUAL
+  /// Derived from supplier cost + the applicable markup rule.
+  AUTO
+}
+
+enum SyncOutcome {
+  SUCCESS
+  PARTIAL
+  FAILED
+}
+
+enum SupplierAuditAction {
+  SUPPLIER_CREATE
+  SUPPLIER_UPDATE
+  SUPPLIER_ENABLE
+  SUPPLIER_DISABLE
+  SUPPLIER_DELETE
+  CONNECTION_TEST
+  CATALOG_SYNC
+  SELECTION_CHANGE
+  MAPPING_CREATE
+  MAPPING_DELETE
+  PREFERRED_CHANGE
+  PRICING_CHANGE
+  PURCHASE_ATTEMPT
+  PURCHASE_SUCCESS
+  PURCHASE_FAILURE
+  REFUND
+  STATUS_SYNC
+}
+
+/// One external product API. Credentials live here encrypted and never leave
+/// the server: no query in `src/lib/queries.ts` and no client component reads
+/// this table.
+model Supplier {
+  id      String @id @default(cuid())
+  name    String
+  slug    String @unique
+  /// Registry key of the adapter that speaks this supplier's dialect,
+  /// e.g. "generic-json". See src/lib/suppliers/adapters.
+  adapter String
+  baseUrl String
+
+  authType SupplierAuthType @default(NONE)
+  /// AES-256-GCM ciphertext of a JSON credential bag
+  /// ({ token, username, password, headerName, queryParam, headers }).
+  /// Null when the supplier needs no authentication.
+  secretCipher String?
+  /// Non-secret hint shown in Admin, e.g. "••••3f9a" — derived on save.
+  secretHint   String?
+
+  /// ISO code of the currency the supplier quotes costs in, e.g. "USD".
+  currency String @default("LYD")
+  /// Base-currency value of one unit of `currency`, multiplied by 1_000_000.
+  /// Null means "no rate configured" — automatic prices are then refused
+  /// rather than invented. Ignored when `currency` is already the base.
+  rateMicros Int?
+
+  /// Supplier-level pricing rule, applied when no product/variant rule wins.
+  markupType  MarkupType @default(PERCENT)
+  markupValue Int        @default(0)
+
+  /// Sandbox vs production, for providers that separate the two.
+  environment SupplierEnvironment @default(SANDBOX)
+
+  status SupplierStatus @default(ACTIVE)
+  notes  String?
+
+  /// Request budget, in milliseconds, for a single outbound call.
+  timeoutMs Int @default(15000)
+
+  lastTestAt      DateTime?
+  lastTestOk      Boolean?
+  /// Sanitized — never contains a credential.
+  lastTestMessage String?
+
+  lastSyncAt           DateTime?
+  lastSuccessfulSyncAt DateTime?
+  lastSyncOutcome      SyncOutcome?
+  lastSyncMessage      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products  SupplierProduct[]
+  orders    SupplierOrder[]
+  mappings  ProductSupplierMapping[]
+  syncLogs  SupplierSyncLog[]
+  auditLogs SupplierAuditLog[]
+
+  @@index([status, name])
+  @@map("suppliers")
+}
+
+/// A mirrored row from a supplier catalog. Present here means "known",
+/// not "for sale": nothing is published until a mapping exists.
+model SupplierProduct {
+  id         String @id @default(cuid())
+  supplierId String
+
+  externalProductId String
+  /// Empty string when the supplier has no separate variant concept.
+  /// Not nullable on purpose: SQL treats NULLs as distinct, which would let
+  /// duplicate rows slip past the unique index below on every re-sync.
+  externalVariantId String @default("")
+
+  name         String
+  category     String?
+  variantLabel String?
+
+  /// Supplier cost in minor units of `currency` (two decimal places).
+  cost     Int
+  currency String
+
+  availability    SupplierAvailability @default(UNKNOWN)
+  /// The supplier's own status string, kept verbatim for Admin diagnosis.
+  rawAvailability String?
+
+  /// Which slice of the provider's catalog this came from.
+  productType SupplierProductType @default(GENERIC)
+  /// The adapter catalog kind that produced this row, e.g. "digital" or
+  /// "social". Two kinds can share a productType, so the missing-item sweep
+  /// scopes on this instead: syncing one feed must never mark another's
+  /// items as gone.
+  catalogKind String?
+  /// Customer inputs this product needs at purchase time, as a JSON array of
+  /// { name, label, type, required, ... }. Null means "nothing to collect".
+  /// Stored per row because two products from one supplier rarely agree.
+  paramFieldsJson String?
+  /// Quantity bounds the supplier states, when it states them.
+  minQty Int?
+  maxQty Int?
+
+  /// Admin picked this item out of the catalog. Selection is a shortlist —
+  /// publishing still requires a mapping.
+  isSelected Boolean @default(false)
+
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  /// Set when a sync stops returning this item; cleared when it comes back.
+  missingSince DateTime?
+  updatedAt   DateTime @updatedAt
+
+  supplier Supplier                 @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  mappings ProductSupplierMapping[]
+
+  @@unique([supplierId, externalProductId, externalVariantId])
+  @@index([supplierId, isSelected])
+  @@index([supplierId, name])
+  @@map("supplier_products")
+}
+
+/// Links one local variant to one supplier catalog row. A variant may hold
+/// several mappings — the same card bought from Supplier A or B — of which
+/// exactly one is `isPreferred` and used for pricing and fulfilment.
+model ProductSupplierMapping {
+  id                String @id @default(cuid())
+  supplierId        String
+  supplierProductId String
+  variantId         String
+
+  /// The mapping the storefront actually uses. Enforced one-per-variant in
+  /// application code, inside the same transaction that sets it.
+  isPreferred Boolean @default(false)
+  /// Lets an admin park a mapping without deleting it.
+  isEnabled   Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  supplier        Supplier        @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  supplierProduct SupplierProduct @relation(fields: [supplierProductId], references: [id], onDelete: Cascade)
+  variant         ProductVariant  @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  /// Re-running a sync or re-importing the same item updates this row instead
+  /// of creating a second one.
+  @@unique([variantId, supplierProductId])
+  @@index([supplierId])
+  @@index([variantId, isPreferred])
+  @@map("product_supplier_mappings")
+}
+
+/// One catalog sync attempt. Append-only.
+model SupplierSyncLog {
+  id         String      @id @default(cuid())
+  supplierId String
+  outcome    SyncOutcome
+  /// Items returned by the adapter.
+  processed  Int         @default(0)
+  created    Int         @default(0)
+  updated    Int         @default(0)
+  failed     Int         @default(0)
+  /// Local variants whose AUTO price moved as a result.
+  repriced   Int         @default(0)
+  durationMs Int         @default(0)
+  /// Sanitized — credentials are stripped before anything is written here.
+  message    String?
+  createdAt  DateTime    @default(now())
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([supplierId, createdAt])
+  @@map("supplier_sync_logs")
+}
+
+/// Audit trail for every administrative action on the supplier system.
+/// Append-only, and never holds a secret.
+model SupplierAuditLog {
+  id         String  @id @default(cuid())
+  /// Null only once the acting admin account is deleted.
+  adminId    String?
+  supplierId String?
+  /// Supplier name snapshot, readable after the supplier is removed.
+  supplierName String?
+  action     SupplierAuditAction
+  /// Short human summary — sanitized.
+  detail     String?
+  createdAt  DateTime @default(now())
+
+  supplier Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+
+  @@index([supplierId, createdAt])
+  @@index([createdAt])
+  @@map("supplier_audit_logs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Supplier purchasing
+//
+//  Catalog synchronisation (above) is deliberately separate from buying. This
+//  section covers the second half: one row per supplier purchase attempt, its
+//  idempotency key, and the delivered goods.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum SupplierEnvironment {
+  SANDBOX
+  PRODUCTION
+}
+
+/// Which half of a provider's catalog a row came from. Libya Play splits its
+/// offering into gift-card style "digital" products and "social" services that
+/// need customer input (a player id, a page link) before they can be bought.
+enum SupplierProductType {
+  GENERIC
+  DIGITAL
+  SOCIAL
+}
+
+/// Lifecycle of one supplier purchase.
+///
+/// PENDING exists so the row — and with it the idempotency key — is committed
+/// *before* the first outbound call. A crash mid-request therefore leaves a
+/// record we can reconcile, never a silent double purchase.
+enum SupplierOrderStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  /// Failed in a way that needs a human: supplier balance short, ambiguous
+  /// response, or a timeout we could not resolve.
+  NEEDS_REVIEW
+  REFUNDED
+}
+
+/// One purchase attempt against a supplier, for one order line.
+///
+/// The unique key on `orderItemId` is the core duplicate guard: a second
+/// attempt for the same line finds this row instead of creating another, and
+/// reuses `orderUuid` so the supplier itself can deduplicate too.
+model SupplierOrder {
+  id         String @id @default(cuid())
+  supplierId String
+  /// The PLUS CARD line being fulfilled. Null for an admin test purchase.
+  orderItemId String? @unique
+  orderId     String?
+  /// Customer being served, kept for the audit trail.
+  userId      String?
+
+  productType SupplierProductType
+  status      SupplierOrderStatus @default(PENDING)
+
+  /// Generated and persisted before the first request, reused on every retry.
+  orderUuid String @unique
+
+  externalProductId String
+  externalVariantId String  @default("")
+  quantity          Int     @default(1)
+
+  /// Supplier's own order id and status string, once it answers.
+  externalOrderId String?
+  externalStatus  String?
+
+  /// Customer inputs sent to the supplier, as JSON. Validated server-side
+  /// against the catalog row's field list before anything is sent.
+  paramsJson String?
+  /// Sanitized response snapshot for Admin. Never holds a delivered secret.
+  responseJson String?
+
+  /// Supplier cost at purchase time, in `currency` minor units.
+  cost     Int?
+  currency String?
+
+  attempts      Int       @default(0)
+  lastAttemptAt DateTime?
+  /// Sanitized failure text, safe to show an admin.
+  lastError     String?
+
+  /// Set once the customer's wallet debit has been reversed.
+  refundedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  supplier  Supplier   @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  orderItem OrderItem? @relation(fields: [orderItemId], references: [id], onDelete: SetNull)
+
+  @@index([supplierId, status, createdAt])
+  @@index([status, createdAt])
+  @@map("supplier_orders")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Wallet top-ups
+//
+//  The wallet itself is not modelled here: `User.balance` holds the money and
+//  `Transaction` holds every movement of it. A separate wallets table would
+//  create a second source of truth for the same figure, which is the one kind
+//  of duplication a ledger must never have.
+//
+//  What is modelled is the *way in*: the payment rails an admin offers, and the
+//  requests customers raise against them. Every rail below is manual — a bank
+//  transfer, a local payment app — so a request is a claim to be reviewed, and
+//  only an approval moves money.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The kind of rail, used for the icon and for grouping. The list is
+/// deliberately open-ended: OTHER covers a rail nobody anticipated, without a
+/// migration.
+enum PaymentMethodKind {
+  BANK_CARD
+  EDFALI
+  MASARIF_PAY
+  YUSR_PAY
+  BANK_TRANSFER
+  CRYPTO
+  OTHER
+}
+
+/// A top-up rail offered in the wallet sheet. Admin-managed end to end.
+model PaymentMethod {
+  id   String            @id @default(cuid())
+  name String
+  kind PaymentMethodKind @default(OTHER)
+
+  /// Admin-uploaded logo, e.g. /uploads/methods/xxx.png. Falls back to the
+  /// icon implied by `kind` when absent.
+  logo String?
+  /// One line under the name in the sheet.
+  description String?
+  /// Dinars per unit of the rail's own currency, x1_000_000. Shown beside
+  /// the name for crypto rails ("الصرف (8.1)"). Null for dinar rails.
+  exchangeRate Int?
+  /// What the customer must do to pay — account number, wallet address, steps.
+  /// Shown after the rail is chosen.
+  instructions String?
+
+  /// Service fee, in basis points of the amount (250 = 2.5%).
+  feeBps   Int @default(0)
+  /// Flat fee in minor units, added on top of the percentage.
+  feeFixed Int @default(0)
+
+  /// Bounds on a single request, in minor units. Null means unbounded.
+  minAmount Int?
+  maxAmount Int?
+
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  topUps TopUpRequest[]
+
+  @@index([isActive, sortOrder])
+  @@map("payment_methods")
+}
+
+enum TopUpStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  /// Withdrawn by the customer before review.
+  CANCELLED
+}
+
+/// A customer's request to add money.
+///
+/// Nothing here touches a balance. Approval does, in one transaction that also
+/// writes the matching `Transaction` row — so credited money without a record,
+/// or a record without money, is not a state this app can reach.
+model TopUpRequest {
+  id       String @id @default(cuid())
+  /// Customer-facing deposit number, counted independently of store orders:
+  /// deposit #1 and order #1 are different things and must never be confused
+  /// in a receipt or a support conversation.
+  number   Int    @unique
+  userId   String
+  methodId String?
+  /// Method name at request time, readable after the rail is renamed or removed.
+  methodName String
+
+  /// What the customer says they paid, in minor units.
+  amount Int
+  /// Fee applied by the rail, in minor units.
+  fee    Int @default(0)
+  /// What reaches the wallet on approval: amount − fee. Frozen at request time
+  /// so a later fee change cannot alter a pending claim.
+  credited Int
+
+  status TopUpStatus @default(PENDING)
+
+  /// The customer's own proof — a transfer id, a receipt number.
+  reference String?
+  /// Free note from the customer.
+  note      String?
+  /// The reviewing admin's reason, shown back to the customer on rejection.
+  adminNote String?
+
+  reviewedById String?
+  reviewedAt   DateTime?
+  /// The credit this approval produced, for a one-to-one audit trail.
+  transactionId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User           @relation("TopUpCustomer", fields: [userId], references: [id], onDelete: Cascade)
+  reviewer User?          @relation("TopUpReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  method   PaymentMethod? @relation(fields: [methodId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("top_up_requests")
+}
+
+/// Monotonic counters for customer-facing numbers.
+///
+/// Each key advances inside the same transaction that creates the record it
+/// numbers, so a crash cannot hand two rows the same number, and the store's
+/// orders and the wallet's deposits count independently of one another.
+model Sequence {
+  /// "order" | "deposit"
+  key   String @id
+  value Int    @default(0)
+
+  @@map("sequences")
+}
+
+/// A line in a customer's support conversation.
+///
+/// There is one thread per customer and it needs no id of its own: the shop is
+/// always the other party, so `userId` names the conversation. Ordering by
+/// `createdAt` reads it back.
+model SupportMessage {
+  id     String @id @default(cuid())
+  /// The customer the conversation belongs to — never the sender.
+  userId String
+  /// True when the shop wrote it, false when the customer did.
+  fromStaff Boolean @default(false)
+  /// Which admin replied, kept for accountability. Null on customer messages
+  /// and on replies whose author was later deleted.
+  staffId   String?
+  body      String
+  /// When the other side opened the thread and saw it. Drives the unread
+  /// badges on both the customer's screen and the admin's list.
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user  User  @relation("SupportCustomer", fields: [userId], references: [id], onDelete: Cascade)
+  staff User? @relation("SupportStaff", fields: [staffId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([fromStaff, readAt])
+  @@map("support_messages")
+}
+
+/// The state of a customer's support conversation.
+///
+/// Separate from the messages because closing is a property of the
+/// conversation, not of any line in it. The row is created on demand: a
+/// customer who has never written support has no thread and needs none.
+model SupportThread {
+  /// One thread per customer, so the customer is the key.
+  userId String @id
+  /// Null while the conversation is open. Set when either side closes it, and
+  /// cleared again by the next message — closing ends a topic, it does not lock
+  /// anybody out.
+  closedAt   DateTime?
+  /// Who closed it, so a customer's own close is distinguishable from the
+  /// shop's. Null once that account is gone.
+  closedById String?
+  /// When the customer cleared their own view. Messages older than this are
+  /// hidden from them and from nobody else — the shop keeps the whole history,
+  /// which is the point: a customer tidying their screen must not be able to
+  /// erase the record of what was agreed.
+  clearedAt  DateTime?
+  updatedAt  DateTime  @updatedAt
+
+  user     User  @relation("SupportThreadCustomer", fields: [userId], references: [id], onDelete: Cascade)
+  closedBy User? @relation("SupportThreadCloser", fields: [closedById], references: [id], onDelete: SetNull)
+
+  @@map("support_threads")
+}
