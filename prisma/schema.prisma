@@ -1,6 +1,6 @@
 // PLUS CARD — Gift Card Marketplace
 // All monetary values are stored as INTEGER minor units (1.00 د.ل = 100).
-// Provider is sqlite for local development; switch to postgresql for production.
+// Provider is postgresql (Neon on Vercel). Set DATABASE_URL in the environment.
 
 generator client {
   provider = "prisma-client"
@@ -8,7 +8,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 enum Role {

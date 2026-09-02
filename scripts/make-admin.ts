@@ -3,11 +3,12 @@
  *
  *   npm run db:make-admin -- someone@example.com
  */
-import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
+import { requireDatabaseUrl } from "../src/lib/database-url";
 
 const prisma = new PrismaClient({
-  adapter: new PrismaBetterSqlite3({ url: process.env.DATABASE_URL ?? "file:./dev.db" }),
+  adapter: new PrismaPg({ connectionString: requireDatabaseUrl() }),
 });
 
 async function main() {

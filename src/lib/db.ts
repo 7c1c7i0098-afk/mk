@@ -1,17 +1,16 @@
-import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/generated/prisma/client";
+import { requireDatabaseUrl } from "@/lib/database-url";
 
 /**
- * Prisma 7 connects through a driver adapter. Swapping SQLite for PostgreSQL
- * in production only means replacing this adapter with `PrismaPg` and updating
- * the datasource provider in prisma/schema.prisma.
+ * Prisma 7 connects through a driver adapter. PostgreSQL (Neon on Vercel) is
+ * the only supported target: serverless filesystems are read-only and
+ * ephemeral, so a file-backed database cannot survive there.
  */
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 function createPrismaClient() {
-  const adapter = new PrismaBetterSqlite3({
-    url: process.env.DATABASE_URL ?? "file:./dev.db",
-  });
+  const adapter = new PrismaPg({ connectionString: requireDatabaseUrl() });
 
   return new PrismaClient({
     adapter,
